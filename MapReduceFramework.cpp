@@ -98,9 +98,6 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
     for(int i ; i<multiThreadLevel; i++) {
         pthread_join(job->threads[i], nullptr);
     }
-
-
-
     return job;
 }
 void waitForJob(JobHandle job){}
