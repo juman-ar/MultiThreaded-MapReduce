@@ -65,6 +65,7 @@ void* mapPhase(void* arg) {
     return nullptr;
 }
 
+
 bool sort_helper(IntermediatePair &first, IntermediatePair &sec){
     return *(first.first) < *(sec.first);
 }
