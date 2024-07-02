@@ -21,6 +21,7 @@ typedef struct Job_context;
 struct Thread_context{
     int tid;
     Job_context *job_context;
+    IntermediateVec inter_vec; //TODO zedt hay
 
 
 };
@@ -103,11 +104,23 @@ void shuffle_phase(void* arg) {
     while (!thread_context->job_context->vec_of_inter_vecs.empty()) {
 
        // if(!(*(curr.first)<*()))
+    }
+}
+void reduce_phase(void * arg){
+    Thread_context* thread_context = (Thread_context*) arg;
 
-
+    if(pthread_mutex_lock(&thread_context->job_context->reduce_mutex)!=0){
+        printf("ERROR");//TODO
+        printf("\n");
+        exit(EXIT_FAILURE);
     }
 
 
+    if(pthread_mutex_unlock(&thread_context->job_context->reduce_mutex)!=0){
+        printf("ERROR");//TODO
+        printf("\n");
+        exit(EXIT_FAILURE);
+    }
 }
 
 JobHandle startMapReduceJob(const MapReduceClient& client,
