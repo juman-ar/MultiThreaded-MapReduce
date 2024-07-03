@@ -143,7 +143,8 @@ void reduce_phase(void * arg){
 
 
 void* map_reduce_job(void* arg){
-    Job_context* jobContext = static_cast<Job_context*>(arg);
+    Thread_context* thread_context = (Thread_context*) arg;
+    Job_context* jobContext = thread_context->job_context;
 
 }
 
