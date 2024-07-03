@@ -39,9 +39,10 @@ struct Job_context{
     std::atomic<int>mapcompleted;
     std::atomic<int>reducecompleted;
     std::atomic<int>total_pairs;
-    pthread_mutex_t map_mutex = PTHREAD_MUTEX_INITIALIZER;
-    pthread_mutex_t reduce_mutex= PTHREAD_MUTEX_INITIALIZER;
-
+    // pthread_mutex_t map_mutex = PTHREAD_MUTEX_INITIALIZER;
+    // pthread_mutex_t reduce_mutex= PTHREAD_MUTEX_INITIALIZER;
+    sem_t map_semaphore;
+    sem_t reduce_semaphore;
 };
 
 
@@ -54,19 +55,25 @@ void* mapPhase(void* arg) {
     Thread_context* thread_context = static_cast<Thread_context*>(arg);
     //auto *jobContext = (Job_context*)threadContext->;
     for (const auto& inputPair : thread_context->job_context->input_vec) {
-        if(pthread_mutex_lock(&thread_context->job_context->map_mutex)!=0){
-            printf("ERROR");//TODO
-            printf("\n");
-            exit(EXIT_FAILURE);
-        }
+        // if(pthread_mutex_lock(&thread_context->job_context->map_mutex)!=0){
+        //     printf("ERROR");//TODO
+        //     printf("\n");
+        //     exit(EXIT_FAILURE);
+        // }
+
+        sem_wait(&thread_context->job_context->map_semaphore);
+
         // momken bdl jobcontext tkon intermediate vec
         thread_context->job_context->client->map(inputPair.first, inputPair.second, thread_context->job_context);
         thread_context->job_context->mapcompleted++;
-        if(pthread_mutex_unlock(&thread_context->job_context->map_mutex)!=0){
-            printf("ERROR");//TODO
-            printf("\n");
-            exit(EXIT_FAILURE);
-        }
+
+        sem_post(&thread_context->job_context->map_semaphore);
+
+        // if(pthread_mutex_unlock(&thread_context->job_context->map_mutex)!=0){
+        //     printf("ERROR");//TODO
+        //     printf("\n");
+        //     exit(EXIT_FAILURE);
+        // }
 
     }
     return nullptr;
@@ -113,19 +120,28 @@ void shuffle_phase(void* arg) {
 void reduce_phase(void * arg){
     Thread_context* thread_context = (Thread_context*) arg;
 
-    if(pthread_mutex_lock(&thread_context->job_context->reduce_mutex)!=0){
-        printf("ERROR");//TODO
-        printf("\n");
-        exit(EXIT_FAILURE);
-    }
+    sem_wait(&thread_context->job_context->reduce_semaphore);
+
+    // Reduce logic goes here
+
+    sem_post(&thread_context->job_context->reduce_semaphore);
 
 
-    if(pthread_mutex_unlock(&thread_context->job_context->reduce_mutex)!=0){
-        printf("ERROR");//TODO
-        printf("\n");
-        exit(EXIT_FAILURE);
-    }
+    // if(pthread_mutex_lock(&thread_context->job_context->reduce_mutex)!=0){
+    //     printf("ERROR");//TODO
+    //     printf("\n");
+    //     exit(EXIT_FAILURE);
+    // }
+    //
+    //
+    // if(pthread_mutex_unlock(&thread_context->job_context->reduce_mutex)!=0){
+    //     printf("ERROR");//TODO
+    //     printf("\n");
+    //     exit(EXIT_FAILURE);
+    // }
 }
+
+
 void* map_reduce_job(void* arg){
     Job_context* jobContext = static_cast<Job_context*>(arg);
 
@@ -144,6 +160,9 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
     job->output_vec= outputVec;
     job->client= &client;
     job->barrier= new Barrier(multiThreadLevel);
+    sem_init(&job->map_semaphore, 0, 1);
+    sem_init(&job->reduce_semaphore, 0, 1);
+
     for(int i ; i<multiThreadLevel ; i++){
         pthread_create(&job->threads[i], nullptr,mapPhase,job->threads+i);
     }
