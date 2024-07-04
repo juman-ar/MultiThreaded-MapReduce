@@ -13,7 +13,7 @@
 #include <set>
 //#include <cstdio>
 //#include <cstdlib>
-#define SYSTEM_ERROR "system error: cannot create thread"
+#define SYSTEM_ERROR "system error: cannot create thread\n"
 
 #define INDEX 0x7FFFFFF
 #define INC_PROCESSED 0x80000000
@@ -42,7 +42,7 @@ struct Compare {
 struct Job_context{
     pthread_t *threads;
     JobState state {UNDEFINED_STAGE,0.0};
-    IntermediateVec intermediate_vec;
+    //IntermediateVec intermediate_vec;
     std::set<IntermediatePair, Compare> inter_set;
 
     InputVec input_vec;
@@ -55,17 +55,33 @@ struct Job_context{
     std::vector<IntermediateVec> shuffled_vecs;
 
     std::atomic<uint64_t> atomic_counter;
+    bool flag; //todo may make it atomic
 
     // std::atomic<int>mapcompleted;
     // std::atomic<int>reducecompleted;
     // std::atomic<int>total_pairs;
     // pthread_mutex_t map_mutex = PTHREAD_MUTEX_INITIALIZER;
     // pthread_mutex_t reduce_mutex= PTHREAD_MUTEX_INITIALIZER;
+
     sem_t map_semaphore;
     sem_t reduce_semaphore;
+    sem_t wait_sem;
+
+    ~Job_context();
 };
 
+Job_context::~Job_context() {
+    // pthread_mutex_destroy(&outputMutex);
+    // pthread_mutex_destroy(&intermediateMutex);
+    // pthread_mutex_destroy(&holdMutex);
+    sem_destroy(&map_semaphore);
+    sem_destroy(&reduce_semaphore);
+    sem_destroy(&wait_sem);
+    delete [] threads;
+    delete [] thread_contexts;
+    delete barrier;
 
+}
 ////helper functions////
 
 
@@ -206,11 +222,12 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
     job->input_vec = inputVec ;
     job->output_vec= outputVec;
     job->client= &client;
+    job->flag=false;
 
     job->barrier= new Barrier(multiThreadLevel);
     sem_init(&job->map_semaphore, 0, 1);
     sem_init(&job->reduce_semaphore, 0, 1);
-
+    sem_init(&job->wait_sem, 0, 1);
     for(int i ; i<multiThreadLevel ; i++){
         pthread_create(&job->threads[i], nullptr,mapPhase,job->threads+i);
     }
@@ -237,7 +254,15 @@ void emit3 (K3* key, V3* value, void* context) {
 }
 
 void waitForJob(JobHandle job) {
-
+    auto *job_context= (Job_context*) job;
+    sem_wait(&job_context->wait_sem);
+    for (int i = 0; i < job_context->levels; ++i) {
+        if (pthread_join(job_context->threads[i], nullptr) != 0) {
+            fprintf(stderr,SYSTEM_ERROR);
+            exit(EXIT_FAILURE);
+        }
+    }
+    sem_post(&job_context->wait_sem);
 }
 
 void getJobState(JobHandle job, JobState* state) {
@@ -245,6 +270,11 @@ void getJobState(JobHandle job, JobState* state) {
 }
 
 void closeJobHandle(JobHandle job) {
-
+    auto *job_context= (Job_context*) job;
+    if(!job_context->flag) {
+        waitForJob(job);
+        job_context->flag=true;
+    }
+   delete job_context;
 }
 
