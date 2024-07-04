@@ -10,23 +10,41 @@
 #include <vector>
 #include <algorithm>
 #include <semaphore.h>
+#include <set>
 //#include <cstdio>
 //#include <cstdlib>
+#define SYSTEM_ERROR "system error: cannot create thread"
 
+#define INDEX 0x7FFFFFF
+#define INC_PROCESSED 0x80000000
+#define PROCESSED 0x3FFFFFFF80000000
+#define PERCENTAGE 100
 
 
 typedef struct Job_context;
 struct Thread_context{
     int tid;
     Job_context *job_context;
-    IntermediateVec inter_vec; //TODO zedt hay
+   // IntermediateVec inter_vec; //TODO zedt hay
 };
+
+struct Compare {
+    bool operator()(const IntermediatePair &first, const  IntermediatePair &sec) const{
+        return *(first.first) < *(sec.first);
+    }
+};
+
+// bool equal(IntermediatePair &right, IntermediatePair &left) {
+//     return !(*right.first < *left.first) && !(*left.first < *right.first);
+// }
 
 
 struct Job_context{
     pthread_t *threads;
     JobState state {UNDEFINED_STAGE,0.0};
     IntermediateVec intermediate_vec;
+    std::set<IntermediatePair, Compare> inter_set;
+
     InputVec input_vec;
     OutputVec output_vec;
     int levels;
@@ -36,9 +54,11 @@ struct Job_context{
     std::vector<IntermediateVec> vec_of_inter_vecs;
     std::vector<IntermediateVec> shuffled_vecs;
 
-    std::atomic<int>mapcompleted;
-    std::atomic<int>reducecompleted;
-    std::atomic<int>total_pairs;
+    std::atomic<uint64_t> atomic_counter;
+
+    // std::atomic<int>mapcompleted;
+    // std::atomic<int>reducecompleted;
+    // std::atomic<int>total_pairs;
     // pthread_mutex_t map_mutex = PTHREAD_MUTEX_INITIALIZER;
     // pthread_mutex_t reduce_mutex= PTHREAD_MUTEX_INITIALIZER;
     sem_t map_semaphore;
@@ -53,8 +73,10 @@ struct Job_context{
 //TODO checkthis function
 void* mapPhase(void* arg) {
     Thread_context* thread_context = static_cast<Thread_context*>(arg);
-    //auto *jobContext = (Job_context*)threadContext->;
+
     for (const auto& inputPair : thread_context->job_context->input_vec) {
+       // uint64_t pair_index = ((*(counter))++) & INDEX;
+
         // if(pthread_mutex_lock(&thread_context->job_context->map_mutex)!=0){
         //     printf("ERROR");//TODO
         //     printf("\n");
@@ -65,7 +87,6 @@ void* mapPhase(void* arg) {
 
         // momken bdl jobcontext tkon intermediate vec
         thread_context->job_context->client->map(inputPair.first, inputPair.second, thread_context->job_context);
-        thread_context->job_context->mapcompleted++;
 
         sem_post(&thread_context->job_context->map_semaphore);
 
@@ -80,15 +101,13 @@ void* mapPhase(void* arg) {
 }
 
 
-bool sort_helper(IntermediatePair &first, IntermediatePair &sec){
-    return *(first.first) < *(sec.first);
-}
 
-void* sort_vec(Thread_context* threadContext){
-    auto *jobContext = (Job_context*)threadContext->job_context;
-    IntermediateVec &curr = jobContext->vec_of_inter_vecs.at(threadContext->tid);
-    std::sort(curr.begin(),curr.end(),sort_helper);
-}
+
+// void* sort_vec(Thread_context* threadContext){
+//     auto *jobContext = (Job_context*)threadContext->job_context;
+//     IntermediateVec &curr = jobContext->vec_of_inter_vecs.at(threadContext->tid);
+//     std::sort(curr.begin(),curr.end(),sort_helper);
+// }
 
 
 //void suffle_vectors(void* arg){
@@ -107,22 +126,49 @@ void* sort_vec(Thread_context* threadContext){
 //    }
 //
 //}
+
 void shuffle_phase(void* arg) {
     Thread_context* thread_context = (Thread_context*) arg;
-    std::vector<std::pair<K2, V2>> new_vec;
-    auto curr = thread_context->job_context->intermediate_vec.back();
+    thread_context->job_context->state.stage=SHUFFLE_STAGE;
+    thread_context->job_context->atomic_counter=((uint64_t) 1) << 63;
+    IntermediateVec new_vec;
+    auto& inter_set = thread_context->job_context->inter_set;
 
-    while (!thread_context->job_context->vec_of_inter_vecs.empty()) {
+    if (!inter_set.empty()) {
+        auto lastElement = *inter_set.rbegin(); // Copy the last element
+        thread_context->job_context->vec_of_inter_vecs.push_back(new_vec);
+        for (auto i = inter_set.rbegin(); i != inter_set.rend(); ++i) {
+            if (!(*(lastElement.first) < *(i->first) ||  *(i->first) < *(lastElement.first))) {
 
-       // if(!(*(curr.first)<*()))
+                thread_context->job_context->vec_of_inter_vecs.back().push_back(*i);
+                thread_context->job_context->atomic_counter++; // TODO
+            } else {
+                lastElement = *i;
+                IntermediateVec v;
+                v.push_back(*i);
+                thread_context->job_context->vec_of_inter_vecs.push_back(v);
+                thread_context->job_context->atomic_counter++; // TODO
+            }
+        }
     }
 }
+
 void reduce_phase(void * arg){
     Thread_context* thread_context = (Thread_context*) arg;
+    thread_context->job_context->state.stage=REDUCE_STAGE;
+    thread_context->job_context->atomic_counter= ((uint64_t) 3) << 62;
 
     sem_wait(&thread_context->job_context->reduce_semaphore);
 
     // Reduce logic goes here
+    int element = thread_context->job_context->atomic_counter++;
+    while (element < thread_context->job_context->vec_of_inter_vecs.size()) {
+        thread_context->job_context->client->reduce(&thread_context->job_context->vec_of_inter_vecs.at(element)
+            ,thread_context);
+        //todo add progress
+        element = thread_context->job_context->atomic_counter++;
+
+    }
 
     sem_post(&thread_context->job_context->reduce_semaphore);
 
@@ -148,7 +194,6 @@ void* map_reduce_job(void* arg){
 
 }
 
-
 ////API functions////
 JobHandle startMapReduceJob(const MapReduceClient& client,
                             const InputVec& inputVec, OutputVec& outputVec,
@@ -156,10 +201,12 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
     Job_context *job = new Job_context;
     job->threads = new pthread_t(multiThreadLevel);
     job->state.stage= MAP_STAGE;
+    job->atomic_counter = ((uint64_t) 1) << 62;
     job->levels = multiThreadLevel;
     job->input_vec = inputVec ;
     job->output_vec= outputVec;
     job->client= &client;
+
     job->barrier= new Barrier(multiThreadLevel);
     sem_init(&job->map_semaphore, 0, 1);
     sem_init(&job->reduce_semaphore, 0, 1);
@@ -167,9 +214,9 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
     for(int i ; i<multiThreadLevel ; i++){
         pthread_create(&job->threads[i], nullptr,mapPhase,job->threads+i);
     }
-    for(int i ; i<multiThreadLevel; i++) {
-        pthread_join(job->threads[i], nullptr);
-    }
+    // for(int i ; i<multiThreadLevel; i++) {
+    //     pthread_join(job->threads[i], nullptr);
+    // }
     return job;
 }
 
@@ -177,15 +224,27 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
 
 void emit2 (K2* key, V2* value, void* context) {
     auto *thread_context = (Thread_context*) context;
+    thread_context->job_context->inter_set.insert(IntermediatePair(key, value));
 
 }
 
 
 void emit3 (K3* key, V3* value, void* context) {
+    //todo check if we need a mutex
     auto *thread_context = (Thread_context*) context;
+    thread_context->job_context->output_vec.push_back(OutputPair(key, value));
 
 }
 
-void waitForJob(JobHandle job){}
-void getJobState(JobHandle job, JobState* state);
-void closeJobHandle(JobHandle job);
+void waitForJob(JobHandle job) {
+
+}
+
+void getJobState(JobHandle job, JobState* state) {
+
+}
+
+void closeJobHandle(JobHandle job) {
+
+}
+

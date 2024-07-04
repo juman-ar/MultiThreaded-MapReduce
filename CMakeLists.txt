@@ -8,7 +8,6 @@ include_directories(.)
 add_executable(ex3_os
         Barrier.cpp
         Barrier.h
-        hu.cpp
         MapReduceClient.h
         MapReduceFramework.cpp
         MapReduceFramework.h)
