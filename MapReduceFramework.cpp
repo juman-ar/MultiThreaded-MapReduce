@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <semaphore.h>
 #include <set>
+
 //#include <cstdio>
 //#include <cstdlib>
 #define SYSTEM_ERROR "system error: cannot create thread\n"
@@ -25,7 +26,7 @@ typedef struct Job_context;
 struct Thread_context{
     int tid;
     Job_context *job_context;
-   // IntermediateVec inter_vec; //TODO zedt hay
+   // IntermediateVec inter_vec;
 };
 
 struct Compare {
@@ -55,7 +56,7 @@ struct Job_context{
     std::vector<IntermediateVec> shuffled_vecs;
 
     std::atomic<uint64_t> atomic_counter;
-    bool flag; //todo may make it atomic
+    bool flag; //todo may have to make it atomic
 
     // std::atomic<int>mapcompleted;
     // std::atomic<int>reducecompleted;
@@ -86,15 +87,14 @@ Job_context::~Job_context() {
 
 
 
-//TODO checkthis function
-void* mapPhase(void* arg) {
+void mapPhase(void* arg) {
     Thread_context* thread_context = static_cast<Thread_context*>(arg);
 
     for (const auto& inputPair : thread_context->job_context->input_vec) {
        // uint64_t pair_index = ((*(counter))++) & INDEX;
 
         // if(pthread_mutex_lock(&thread_context->job_context->map_mutex)!=0){
-        //     printf("ERROR");//TODO
+        //     printf("ERROR");
         //     printf("\n");
         //     exit(EXIT_FAILURE);
         // }
@@ -107,13 +107,12 @@ void* mapPhase(void* arg) {
         sem_post(&thread_context->job_context->map_semaphore);
 
         // if(pthread_mutex_unlock(&thread_context->job_context->map_mutex)!=0){
-        //     printf("ERROR");//TODO
+        //     printf("ERROR");
         //     printf("\n");
         //     exit(EXIT_FAILURE);
         // }
 
     }
-    return nullptr;
 }
 
 
@@ -169,14 +168,13 @@ void shuffle_phase(void* arg) {
     }
 }
 
-void reduce_phase(void * arg){
+void reduce_phase(void * arg) {
     Thread_context* thread_context = (Thread_context*) arg;
     thread_context->job_context->state.stage=REDUCE_STAGE;
     thread_context->job_context->atomic_counter= ((uint64_t) 3) << 62;
 
     sem_wait(&thread_context->job_context->reduce_semaphore);
 
-    // Reduce logic goes here
     int element = thread_context->job_context->atomic_counter++;
     while (element < thread_context->job_context->vec_of_inter_vecs.size()) {
         thread_context->job_context->client->reduce(&thread_context->job_context->vec_of_inter_vecs.at(element)
@@ -187,30 +185,39 @@ void reduce_phase(void * arg){
     }
 
     sem_post(&thread_context->job_context->reduce_semaphore);
-
+}
 
     // if(pthread_mutex_lock(&thread_context->job_context->reduce_mutex)!=0){
-    //     printf("ERROR");//TODO
+    //     printf("ERROR");
     //     printf("\n");
     //     exit(EXIT_FAILURE);
     // }
     //
     //
     // if(pthread_mutex_unlock(&thread_context->job_context->reduce_mutex)!=0){
-    //     printf("ERROR");//TODO
+    //     printf("ERROR");//
     //     printf("\n");
     //     exit(EXIT_FAILURE);
     // }
-}
 
 
-void* map_reduce_job(void* arg){
+
+void* map_reduce(void* arg){
     Thread_context* thread_context = (Thread_context*) arg;
-    Job_context* jobContext = thread_context->job_context;
+    mapPhase(arg);
+    thread_context->job_context->barrier->barrier();
 
+    if(thread_context->tid==0) {
+        //todo check if we need to do all the stage chenges or if we can just do them in the suffle function itself
+        shuffle_phase(arg);
+    }
+    thread_context->job_context->barrier->barrier();
+    reduce_phase(arg);
+    return nullptr;
 }
 
 ////API functions////
+
 JobHandle startMapReduceJob(const MapReduceClient& client,
                             const InputVec& inputVec, OutputVec& outputVec,
                             int multiThreadLevel){
@@ -229,7 +236,7 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
     sem_init(&job->reduce_semaphore, 0, 1);
     sem_init(&job->wait_sem, 0, 1);
     for(int i ; i<multiThreadLevel ; i++){
-        pthread_create(&job->threads[i], nullptr,mapPhase,job->threads+i);
+        pthread_create(&job->threads[i], nullptr,map_reduce,job->threads+i);
     }
     // for(int i ; i<multiThreadLevel; i++) {
     //     pthread_join(job->threads[i], nullptr);
@@ -265,9 +272,12 @@ void waitForJob(JobHandle job) {
     sem_post(&job_context->wait_sem);
 }
 
+
+//this function gets a JobHandle and updates the state of the job into the  given JobState struct (from the pdf)
 void getJobState(JobHandle job, JobState* state) {
 
 }
+
 
 void closeJobHandle(JobHandle job) {
     auto *job_context= (Job_context*) job;
