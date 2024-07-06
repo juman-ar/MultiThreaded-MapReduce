@@ -10,4 +10,6 @@ add_executable(ex3_os
         Barrier.h
         MapReduceClient.h
         MapReduceFramework.cpp
-        MapReduceFramework.h)
+        MapReduceFramework.h
+        test1-1_thread_1_process.cpp
+        test4-1_thread_4_process.cpp)

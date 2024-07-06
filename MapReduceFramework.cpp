@@ -328,6 +328,7 @@ void getJobState(JobHandle job, JobState* state) {
 }
 
 
+
 void closeJobHandle(JobHandle job) {
     auto *job_context= (Job_context*) job;
     if(!job_context->flag) {
