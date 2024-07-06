@@ -19,7 +19,6 @@
 #define INDEX 0x7FFFFFF
 #define INC_PROCESSED 0x80000000
 #define PROCESSED 0x3FFFFFFF80000000
-#define PERCENTAGE 100
 
 
 typedef struct Job_context;
@@ -55,7 +54,7 @@ struct Job_context{
     std::vector<IntermediateVec> vec_of_inter_vecs;
     std::vector<IntermediateVec> shuffled_vecs;
 
-    std::atomic<uint64_t> atomic_counter;
+    std::atomic<uint64_t>* atomic_counter;
     bool flag; //todo may have to make it atomic
 
     // std::atomic<int>mapcompleted;
@@ -67,6 +66,7 @@ struct Job_context{
     sem_t map_semaphore;
     sem_t reduce_semaphore;
     sem_t wait_sem;
+    sem_t state_sem;
 
     ~Job_context();
 };
@@ -89,7 +89,10 @@ Job_context::~Job_context() {
 
 void mapPhase(void* arg) {
     Thread_context* thread_context = static_cast<Thread_context*>(arg);
+    thread_context->job_context->state.stage= MAP_STAGE;
+    *thread_context->job_context->atomic_counter = ((uint64_t) 1) << 62;
 
+    // ((*(thread_context->job_context->atomic_counter))++) & INDEX;
     for (const auto& inputPair : thread_context->job_context->input_vec) {
        // uint64_t pair_index = ((*(counter))++) & INDEX;
 
@@ -103,6 +106,8 @@ void mapPhase(void* arg) {
 
         // momken bdl jobcontext tkon intermediate vec
         thread_context->job_context->client->map(inputPair.first, inputPair.second, thread_context->job_context);
+        // *thread_context->job_context->atomic_counter += INC_PROCESSED;
+        // ((*(thread_context->job_context->atomic_counter))++) & INDEX;
 
         sem_post(&thread_context->job_context->map_semaphore);
 
@@ -145,7 +150,8 @@ void mapPhase(void* arg) {
 void shuffle_phase(void* arg) {
     Thread_context* thread_context = (Thread_context*) arg;
     thread_context->job_context->state.stage=SHUFFLE_STAGE;
-    thread_context->job_context->atomic_counter=((uint64_t) 1) << 63;
+    *thread_context->job_context->atomic_counter=((uint64_t) 1) << 63;
+
     IntermediateVec new_vec;
     auto& inter_set = thread_context->job_context->inter_set;
 
@@ -156,13 +162,13 @@ void shuffle_phase(void* arg) {
             if (!(*(lastElement.first) < *(i->first) ||  *(i->first) < *(lastElement.first))) {
 
                 thread_context->job_context->vec_of_inter_vecs.back().push_back(*i);
-                thread_context->job_context->atomic_counter++; // TODO
+                thread_context->job_context->atomic_counter += INC_PROCESSED;
             } else {
                 lastElement = *i;
                 IntermediateVec v;
                 v.push_back(*i);
                 thread_context->job_context->vec_of_inter_vecs.push_back(v);
-                thread_context->job_context->atomic_counter++; // TODO
+                thread_context->job_context->atomic_counter += INC_PROCESSED; // TODO
             }
         }
     }
@@ -170,17 +176,19 @@ void shuffle_phase(void* arg) {
 
 void reduce_phase(void * arg) {
     Thread_context* thread_context = (Thread_context*) arg;
+
     thread_context->job_context->state.stage=REDUCE_STAGE;
-    thread_context->job_context->atomic_counter= ((uint64_t) 3) << 62;
+    *thread_context->job_context->atomic_counter= ((uint64_t) 3) << 62;
 
     sem_wait(&thread_context->job_context->reduce_semaphore);
 
-    int element = thread_context->job_context->atomic_counter++;
+    int element = *thread_context->job_context->atomic_counter++ & (INDEX);
     while (element < thread_context->job_context->vec_of_inter_vecs.size()) {
         thread_context->job_context->client->reduce(&thread_context->job_context->vec_of_inter_vecs.at(element)
             ,thread_context);
         //todo add progress
-        element = thread_context->job_context->atomic_counter++;
+        *thread_context->job_context->atomic_counter += (INC_PROCESSED);
+        element = *thread_context->job_context->atomic_counter++ & INDEX;
 
     }
 
@@ -223,8 +231,8 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
                             int multiThreadLevel){
     Job_context *job = new Job_context;
     job->threads = new pthread_t(multiThreadLevel);
-    job->state.stage= MAP_STAGE;
-    job->atomic_counter = ((uint64_t) 1) << 62;
+    //job->state.stage= UNDEFINED_STAGE;
+    *job->atomic_counter = 0;
     job->levels = multiThreadLevel;
     job->input_vec = inputVec ;
     job->output_vec= outputVec;
@@ -235,6 +243,8 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
     sem_init(&job->map_semaphore, 0, 1);
     sem_init(&job->reduce_semaphore, 0, 1);
     sem_init(&job->wait_sem, 0, 1);
+    sem_init(&job->state_sem, 0, 1);
+
     for(int i ; i<multiThreadLevel ; i++){
         pthread_create(&job->threads[i], nullptr,map_reduce,job->threads+i);
     }
@@ -276,7 +286,45 @@ void waitForJob(JobHandle job) {
 
 //this function gets a JobHandle and updates the state of the job into the  given JobState struct (from the pdf)
 void getJobState(JobHandle job, JobState* state) {
+    auto *job_context = (Job_context *) job;
+    sem_wait(&job_context->state_sem);
 
+    unsigned long counter = (job_context->atomic_counter->load());
+    int processed = (counter & PROCESSED) >> 31; // taking the 31 in thr middle
+    stage_t stage = static_cast<stage_t>(counter >> 62);
+    job_context->state.stage = stage;
+    unsigned long size = 0;
+
+    switch (stage) {
+
+        case UNDEFINED_STAGE:
+            state->percentage = job_context->state.percentage = 0;
+            state->stage = UNDEFINED_STAGE;
+            sem_post(&job_context->state_sem);
+            return;
+
+        case MAP_STAGE:
+            size = job_context->input_vec.size();
+            state->stage= MAP_STAGE;
+            break;
+
+        case SHUFFLE_STAGE:
+            size = job_context->vec_of_inter_vecs.size();
+            state->stage= SHUFFLE_STAGE;
+            break;
+
+        case REDUCE_STAGE:
+            size = job_context->output_vec.size();
+            state->stage= REDUCE_STAGE;
+            break;
+    }
+
+    if (size == 0 ){
+        job_context->state.percentage = state->percentage = 0;
+    } else {
+        job_context->state.percentage = state->percentage = ((float) processed / (float) size) * 100;
+    }
+    sem_post(&job_context->state_sem);
 }
 
 
