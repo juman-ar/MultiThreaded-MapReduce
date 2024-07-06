@@ -273,6 +273,7 @@ void waitForJob(JobHandle job) {
 }
 
 
+
 //this function gets a JobHandle and updates the state of the job into the  given JobState struct (from the pdf)
 void getJobState(JobHandle job, JobState* state) {
 
