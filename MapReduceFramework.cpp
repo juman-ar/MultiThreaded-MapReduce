@@ -7,7 +7,7 @@
 #include <vector>
 #include <algorithm>
 #include <semaphore.h>
-#include <set>
+#include <map>
 #include <cstdio>
 #include <iostream>
 
@@ -34,16 +34,23 @@ struct Thread_context{
 };
 
 
-bool compare_keys(const IntermediatePair &a, IntermediatePair &b) {
-    return *(a.first) < *(b.first);
-}
+// bool compare_keys(const IntermediatePair &a, IntermediatePair &b) {
+//     return *(a.first) < *(b.first);
+// }
 
+struct Compare {
+    bool operator()(const IntermediatePair &first, const  IntermediatePair &sec) const{
+        return *(first.first) < *(sec.first);
+    }
+};
 
 
 struct Job_context{
     pthread_t *threads;
     JobState state {UNDEFINED_STAGE,0.0};
-    IntermediateVec inter_vec;
+    // IntermediateVec inter_vec;
+
+
     InputVec input_vec;
     OutputVec* output_vec;
 
@@ -51,8 +58,8 @@ struct Job_context{
     Barrier *barrier;
     Thread_context* thread_contexts;
     const MapReduceClient *client;
-
-    std::vector<IntermediateVec> vec_of_inter_vecs;
+    std::map< IntermediatePair, std::vector<IntermediatePair>, Compare> inter_map;
+    std::vector<IntermediateVec* > vec_of_inter_vecs;
 
     std::atomic<uint64_t> atomic_counter;
     bool flag;
@@ -101,8 +108,8 @@ void mapPhase(void* arg) {
 
         const auto& inputPair = job_context->input_vec[index];
         job_context->client->map(inputPair.first, inputPair.second, job_context);
-
         job_context->atomic_counter += INCREASE_PROCESSED;
+
         sem_post(&job_context->map_semaphore);
     }
 
@@ -123,31 +130,11 @@ void shuffle_phase(void* arg) {
 
     thread_context->job_context->state.stage = SHUFFLE_STAGE;
     thread_context->job_context->atomic_counter = ((uint64_t) 1) << 63;
-
-    IntermediateVec new_vec;
-    auto &inter_set = thread_context->job_context->inter_vec;
-
-    if (!inter_set.empty()) {
-        auto lastElement = *inter_set.rbegin(); // Copy the last element
-        thread_context->job_context->vec_of_inter_vecs.push_back(new_vec);
-        for (auto i = inter_set.rbegin(); i != inter_set.rend(); ++i) {
-
-            if (!(*(lastElement.first) < *(i->first) || *(i->first) < *(lastElement.first))) {
-                //printf("hihiu");
-                thread_context->job_context->vec_of_inter_vecs.back().push_back(*i);
-                thread_context->job_context->atomic_counter += INCREASE_PROCESSED;
-            } else {
-                lastElement = *i;
-
-                IntermediateVec v;
-
-                v.push_back(*i);
-                thread_context->job_context->vec_of_inter_vecs.push_back(v);
-                thread_context->job_context->atomic_counter += INCREASE_PROCESSED;
-
-            }
-        }
+    for(auto &pair: thread_context->job_context->inter_map) {
+        // printf("%s\n",(pair.first.first));
+        thread_context->job_context->vec_of_inter_vecs.push_back(&pair.second);
     }
+
 }
 
 void reduce_phase(void * arg) {
@@ -163,14 +150,16 @@ void reduce_phase(void * arg) {
         if (index >= job_context->vec_of_inter_vecs.size()) {
             break;
         }
-
+        // auto a = *job_context->vec_of_inter_vecs.at(index);
         sem_wait(&job_context->reduce_semaphore);
 
-        job_context->client->reduce(&job_context->vec_of_inter_vecs.at(index), job_context);
+        job_context->client->reduce(job_context->vec_of_inter_vecs.at(index), job_context);
         job_context->atomic_counter+= INCREASE_PROCESSED;
 
         sem_post(&job_context->reduce_semaphore);
     }
+    thread_context->job_context->barrier->barrier();
+
 
 }
 
@@ -184,23 +173,23 @@ void* map_reduce(void* arg){
     mapPhase(arg);
     thread_context->job_context->barrier->barrier();
 
-    sem_wait(&thread_context->job_context->shuffle_sem);
-    std::sort(thread_context->job_context->inter_vec.begin(),
-        thread_context->job_context->inter_vec.end(),compare_keys);
+    // sem_wait(&thread_context->job_context->shuffle_sem);
+    // std::sort(thread_context->job_context->inter_vec.begin(),
+    //     thread_context->job_context->inter_vec.end(),compare_keys);
 
     if(thread_context->tid==0) {
-        shuffle_phase(arg);
-
-        thread_context->job_context->state.stage=REDUCE_STAGE;
-
-        //reseting the atomic counter
-        uint64_t val = (thread_context->job_context->atomic_counter).load() & RESET_ATOMIC;
-        thread_context->job_context->atomic_counter = val;
-        thread_context->job_context->atomic_counter= ((uint64_t) 3) << 62;
-        thread_context->job_context->state.percentage = 0.0f;
+    shuffle_phase(arg);
+    //
+    thread_context->job_context->state.stage=REDUCE_STAGE;
+    //
+    //     //reseting the atomic counter
+    uint64_t val = (thread_context->job_context->atomic_counter).load() & RESET_ATOMIC;
+    thread_context->job_context->atomic_counter = val;
+    thread_context->job_context->atomic_counter= ((uint64_t) 3) << 62;
+    thread_context->job_context->state.percentage = 0.0f;
     }
-        sem_post(&thread_context->job_context->shuffle_sem);
-
+    // sem_post(&thread_context->job_context->shuffle_sem);
+    //
 
     thread_context->job_context->barrier->barrier();
 
@@ -251,21 +240,30 @@ JobHandle startMapReduceJob(const MapReduceClient& client,
 
 void emit2 (K2* key, V2* value, void* context) {
     auto job_context = (Job_context*) context;
-    job_context->inter_vec.push_back(IntermediatePair(key, value));;
+    auto pair = IntermediatePair(key, value);
+    auto it = job_context->inter_map.find(pair);
+    if(it == job_context->inter_map.end()) {
+        std::vector<IntermediatePair> vec;
+        job_context->inter_map[pair] = vec;
+    }
+    job_context->inter_map[pair].push_back(pair);
 
 }
 
 
 void emit3 (K3* key, V3* value, void* context) {
     auto job_context = (Job_context*) context;
-    sem_wait(&job_context->emit3_sem);
-    job_context->output_vec->push_back(OutputPair(key, value));
-    sem_post(&job_context->emit3_sem);
+    job_context->output_vec->emplace_back(key, value);
 
 }
 
 void waitForJob(JobHandle job) {
     auto* job_context= (Job_context*) job;
+    if(job_context->flag) {
+        return;
+    }
+    job_context->flag=true;
+
     sem_wait(&job_context->wait_sem);
     for (int i = 0; i < job_context->levels; ++i) {
         if (pthread_join(job_context->threads[i], nullptr) != 0) {
@@ -303,7 +301,7 @@ void waitForJob(JobHandle job) {
              break;
 
          case SHUFFLE_STAGE:
-             size = job_context->inter_vec.size();
+             size = job_context->inter_map.size();
              state->stage= SHUFFLE_STAGE;
              break;
 
@@ -327,7 +325,6 @@ void closeJobHandle(JobHandle job) {
     auto job_context= (Job_context*) job;
     if(!job_context->flag) {
         waitForJob(job);
-        job_context->flag=true;
     }
     delete job_context;
 }
