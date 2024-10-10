@@ -1,16 +1,27 @@
+# MapReduce Multi-threaded Programming
 
-EX: 3
+This project is part of the Operating Systems at the Hebrew University of Jerusalem. The goal of this project is to implement a MapReduce 
+framework that allows parallel processing of tasks across multiple threads.The framework is designed to handle tasks that can be divided into 
+map and reduce functions, The framework is generic and can be applied to different tasks by writing custom map and reduce functions.
 
-FILES:
-MapReduceFramework.cpp
-Barrier.cpp
-Barrier.h
-README
-Makefile
+Design Details:
+The MapReduce framework is designed to be modular and scalable:
+- Client-Server Architecture: The framework handles all parallelization, while the client only needs to implement the map and reduce functions.
+- Thread Safety: The framework ensures safe execution of concurrent threads using pthread mutexes and atomic counters.
+- Stages: The job goes through distinct stages (Map, Shuffle, Reduce), and job progress can be monitored.
 
-REMARKS:
-    we asked a student who finished the course to help us understand the main ideas of the exercise,he helped us to
-    understand how to use the bits in the atomic variable and helped us to understand what each vector do and
-    how shuffle works.
+the stages in details:
+1. Map Phase: Each thread processes a subset of the input elements and applies the map function, producing intermediate key-value pairs.
+2. Sort/Shuffle Phase: The intermediary results are sorted by key and grouped.
+3. Reduce Phase: The reduce function is applied to the grouped intermediary results, producing the final output.
 
+Multi-threading:
+The program makes use of pthread library functions for creating and managing threads.
+Synchronization mechanisms (semaphores, barriers, atomic counters) ensure safe execution across multiple threads.
+
+Files Included:
+MapReduceFramework.h: Header file for the MapReduce framework.
+MapReduceClient.h: Header file for defining the client map and reduce functions.
+SampleClient.cpp: Example implementation of a client that counts character frequency in strings using the MapReduce framework.
+Makefile: For compiling the framework into a static library.
 
