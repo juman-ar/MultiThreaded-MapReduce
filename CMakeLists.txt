@@ -11,11 +11,4 @@ add_executable(ex3_os
         MapReduceClient.h
         MapReduceFramework.cpp
         MapReduceFramework.h
-#        test1.cpp
-        test2.cpp
-#        test3.cpp
-#        test4.cpp
-#        test1-1_thread_1_process.cpp
-#        test4-1_thread_4_process.cpp
-#        SampleClient.cpp
 )
